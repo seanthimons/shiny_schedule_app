@@ -94,9 +94,21 @@ ui <- fluidPage(
           fluidRow(
             column(
               12,
-              p("Click on a row in the table to select an employee for editing or deletion."),
-              actionButton("edit_employee_modal_btn", "Edit Selected", class = "btn-info", icon = icon("user-edit")),
-              actionButton("delete_employee", "Delete Selected", class = "btn-danger", icon = icon("user-minus"))
+              p(
+                "Click on a row in the table to select an employee for editing or deletion."
+              ),
+              actionButton(
+                "edit_employee_modal_btn",
+                "Edit Selected",
+                class = "btn-info",
+                icon = icon("user-edit")
+              ),
+              actionButton(
+                "delete_employee",
+                "Delete Selected",
+                class = "btn-danger",
+                icon = icon("user-minus")
+              )
             )
           ),
           hr(),
@@ -290,9 +302,13 @@ server <- function(input, output, session) {
   # This is more robust than onSessionEnded, which may not execute reliably
   # when running the app locally and stopping the R process directly.
   # `ignoreInit = TRUE` prevents it from running on startup, only on changes.
-  observeEvent(employee_roster(), {
-    write_csv(employee_roster(), roster_file_path)
-  }, ignoreInit = TRUE)
+  observeEvent(
+    employee_roster(),
+    {
+      write_csv(employee_roster(), roster_file_path)
+    },
+    ignoreInit = TRUE
+  )
 
   # Observer to auto-populate roster from uploaded file
   observeEvent(raw_data(), {
@@ -330,7 +346,9 @@ server <- function(input, output, session) {
           mutate(availability_days = "", preferred_schedule = "")
 
         # Add to the roster and keep it sorted by name
-        employee_roster(bind_rows(current_roster, new_employees) %>% arrange(name))
+        employee_roster(
+          bind_rows(current_roster, new_employees) %>% arrange(name)
+        )
 
         showNotification(
           paste(nrow(new_employees), "new employee(s) added to roster."),
@@ -424,8 +442,13 @@ server <- function(input, output, session) {
     selected_employee <- roster[selected_row_index, ]
 
     # Convert comma-separated strings to vectors for checkboxGroupInput
-    current_availability <- str_split(selected_employee$availability_days, ", ")[[1]]
-    current_schedule <- str_split(selected_employee$preferred_schedule, ", ")[[1]]
+    current_availability <- str_split(
+      selected_employee$availability_days,
+      ", "
+    )[[1]]
+    current_schedule <- str_split(selected_employee$preferred_schedule, ", ")[[
+      1
+    ]]
 
     showModal(modalDialog(
       title = "Edit Employee Information",
@@ -463,8 +486,14 @@ server <- function(input, output, session) {
     updated_roster <- current_roster
     updated_roster[selected_row_index, "name"] <- trimws(input$edit_name)
     updated_roster[selected_row_index, "home_city"] <- trimws(input$edit_city)
-    updated_roster[selected_row_index, "availability_days"] <- paste(input$edit_availability, collapse = ", ")
-    updated_roster[selected_row_index, "preferred_schedule"] <- paste(input$edit_schedule, collapse = ", ")
+    updated_roster[selected_row_index, "availability_days"] <- paste(
+      input$edit_availability,
+      collapse = ", "
+    )
+    updated_roster[selected_row_index, "preferred_schedule"] <- paste(
+      input$edit_schedule,
+      collapse = ", "
+    )
 
     employee_roster(updated_roster %>% arrange(name))
 
