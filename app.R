@@ -10,7 +10,6 @@ library(readxl)
 library(DT)
 library(janitor)
 library(lubridate)
-library(shinyjs) # For using shinyjs
 
 # 2. Define the UI
 ui <- fluidPage(
@@ -347,7 +346,7 @@ server <- function(input, output, session) {
     )
   })
 
-  # --- *** NEW FEATURE SERVER LOGIC: SCHEDULE GENERATOR *** ---
+  # --- *** SERVER LOGIC FOR SCHEDULE GENERATOR (UPDATED) *** ---
 
   # Reactive value to store the generated schedule data frame
   schedule_data <- reactiveVal(NULL)
@@ -361,28 +360,24 @@ server <- function(input, output, session) {
     dates <- seq(input$schedule_start_date, by = "day", length.out = 7)
     date_colnames <- format(dates, "%a %Y-%m-%d")
 
-    # Create an empty schedule tibble
-    schedule <- tibble(name = roster$name)
+    # *** MODIFIED: Create an empty schedule tibble including home_city from the roster ***
+    schedule <- roster %>%
+      select(name, home_city) %>%
+      arrange(name)
     schedule[, date_colnames] <- ""
 
     # Generate shifts for each day
     for (i in seq_along(date_colnames)) {
-      # List of shifts needed for the day
       shifts_needed <- c(
         rep("AM", as.integer(input$shifts_am)),
         rep("MID", as.integer(input$shifts_mid)),
         rep("PM", as.integer(input$shifts_pm))
       )
-
-      # Ensure we don't try to assign more shifts than available employees
       num_to_assign <- min(length(shifts_needed), nrow(roster))
       if (num_to_assign <= 0) next
-
-      # Randomly sample employees for the day's shifts
       assigned_employees <- sample(roster$name, size = num_to_assign, replace = FALSE)
-      
-      # Assign shifts to the sampled employees for that day
-      schedule[match(assigned_employees, schedule$name), i + 1] <- shifts_needed[1:num_to_assign]
+      # *** MODIFIED: Use the correct column index (i + 2) since home_city is the 2nd column ***
+      schedule[match(assigned_employees, schedule$name), i + 2] <- shifts_needed[1:num_to_assign]
     }
 
     schedule_data(schedule)
@@ -391,36 +386,27 @@ server <- function(input, output, session) {
 
   # Reactive expression that calculates shift counts and prepares data for DT
   display_schedule <- reactive({
-    # Require the base schedule data to exist
     req(schedule_data())
-
     df <- schedule_data()
     
-    # Calculate worked shifts (AM, MID, PM) for each row
+    # *** MODIFIED: Calculate worked shifts, excluding name and home_city columns from the count ***
     shift_counts <- df %>%
-      select(-name) %>% # Exclude name column from count
+      select(-name, -home_city) %>%
       rowwise() %>%
-      mutate(
-        `Shifts Worked` = sum(c_across() %in% c("AM", "MID", "PM"))
-      ) %>%
+      mutate(`Shifts Worked` = sum(c_across() %in% c("AM", "MID", "PM"))) %>%
       pull(`Shifts Worked`)
-
-    # Add the counts to the schedule data
-    df$`Shifts Worked` <- shift_counts
     
+    df$`Shifts Worked` <- shift_counts
     df
   })
 
   # Render the editable schedule table
   output$scheduleTable <- DT::renderDataTable({
-    # Require the final display data
     req(display_schedule())
-    
     df <- display_schedule()
     
-    # Define which columns are editable (all date columns) and which are not
-    # Columns are 0-indexed for DT. Column 0 is 'name', last column is 'Shifts Worked'
-    non_editable_cols <- c(0, ncol(df) - 1)
+    # *** MODIFIED: Define non-editable columns: name (0), home_city (1), and Shifts Worked (last) ***
+    non_editable_cols <- c(0, 1, ncol(df) - 1)
 
     DT::datatable(
       df,
@@ -434,16 +420,9 @@ server <- function(input, output, session) {
   # Observer to handle cell edits from the user
   observeEvent(input$scheduleTable_cell_edit, {
     info <- input$scheduleTable_cell_edit
-
-    # Get the current schedule data
     current_data <- schedule_data()
-    # Update the value in the reactive data frame
-    # DT's 'col' is 1-based and matches the columns in the data frame
+    # The `info$col` is 1-based and correctly maps to the column in schedule_data()
     current_data[info$row, info$col] <- info$value
-
-    # Set the updated data back into the reactive value
-    # This will automatically trigger the 'display_schedule' reactive to recalculate counts
-    # and re-render the table.
     schedule_data(current_data)
   })
 
@@ -455,10 +434,27 @@ server <- function(input, output, session) {
       end_date <- start_date + 6
       paste0("Schedule_", format(start_date, "%Y-%m-%d"), "_to_", format(end_date, "%Y-%m-%d"), ".csv")
     },
+    # *** MODIFIED: Reformat data to be compatible with the Schedule Summary tab ***
     content = function(file) {
-      # Use the 'display_schedule' reactive which contains the final, edited data with shift counts
       req(display_schedule())
-      write_csv(display_schedule(), file)
+      
+      # Transform the wide schedule data into the long format required for summary
+      long_schedule <- display_schedule() %>%
+        select(-`Shifts Worked`) %>% # Remove the summary count column
+        pivot_longer(
+          cols = -c(name, home_city),
+          names_to = "date_raw",
+          values_to = "schedule_block"
+        ) %>%
+        # Only keep rows that have an actual shift assignment
+        filter(schedule_block %in% c("AM", "MID", "PM")) %>%
+        # Extract the proper date from the column header (e.g., "Mon 2023-12-04")
+        mutate(date = as_date(str_extract(date_raw, "\\d{4}-\\d{2}-\\d{2}"))) %>%
+        # Select and reorder columns to match the required input format
+        select(date, name, home_city, schedule_block) %>%
+        arrange(date, name)
+
+      write_csv(long_schedule, file)
     }
   )
 }
