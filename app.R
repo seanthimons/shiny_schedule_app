@@ -91,6 +91,15 @@ ui <- fluidPage(
         ),
         tabPanel(
           "Employee Roster",
+          fluidRow(
+            column(
+              12,
+              p("Click on a row in the table to select an employee for editing or deletion."),
+              actionButton("edit_employee_modal_btn", "Edit Selected", class = "btn-info", icon = icon("user-edit")),
+              actionButton("delete_employee", "Delete Selected", class = "btn-danger", icon = icon("user-minus"))
+            )
+          ),
+          hr(),
           DT::dataTableOutput("rosterTable")
         )
       )
@@ -255,15 +264,80 @@ server <- function(input, output, session) {
 
   # --- New Feature: Employee Registration ---
 
+  # Define the path for the persistent roster file
+  roster_file_path <- "employee_roster.csv"
+
+  # Reactive flag to track if the initial roster has been set by a file upload
+  # in a session where no roster file existed initially.
+  initial_roster_imported <- reactiveVal(file.exists(roster_file_path))
+
   # Reactive value to store the roster.
-  # In a real app, you might load/save this from a file or database.
+  # It now loads from a file if it exists, otherwise it starts empty.
   employee_roster <- reactiveVal({
-    tibble(
-      name = character(),
-      home_city = character(),
-      availability_days = character(),
-      preferred_schedule = character()
-    )
+    if (file.exists(roster_file_path)) {
+      read_csv(roster_file_path, show_col_types = FALSE)
+    } else {
+      tibble(
+        name = character(),
+        home_city = character(),
+        availability_days = character(),
+        preferred_schedule = character()
+      )
+    }
+  })
+
+  # Observer to automatically save the roster to a file whenever it's modified.
+  # This is more robust than onSessionEnded, which may not execute reliably
+  # when running the app locally and stopping the R process directly.
+  # `ignoreInit = TRUE` prevents it from running on startup, only on changes.
+  observeEvent(employee_roster(), {
+    write_csv(employee_roster(), roster_file_path)
+  }, ignoreInit = TRUE)
+
+  # Observer to auto-populate roster from uploaded file
+  observeEvent(raw_data(), {
+    req(raw_data())
+
+    # If a roster file did not exist at startup, the first file upload will
+    # define the entire roster.
+    if (!initial_roster_imported()) {
+      new_roster <- raw_data() %>%
+        distinct(name, home_city) %>%
+        mutate(availability_days = "", preferred_schedule = "") %>%
+        arrange(name)
+
+      employee_roster(new_roster)
+
+      showNotification(
+        paste(nrow(new_roster), "employees imported to create initial roster."),
+        type = "message",
+        duration = 5
+      )
+
+      # Set flag so subsequent uploads in this session will append, not overwrite.
+      initial_roster_imported(TRUE)
+    } else {
+      # If a roster already exists, append only new employees from the file.
+      current_roster <- employee_roster()
+
+      new_from_file <- raw_data() %>%
+        distinct(name, home_city) %>%
+        # Filter out employees who are already in the roster
+        filter(!name %in% current_roster$name)
+
+      if (nrow(new_from_file) > 0) {
+        new_employees <- new_from_file %>%
+          mutate(availability_days = "", preferred_schedule = "")
+
+        # Add to the roster and keep it sorted by name
+        employee_roster(bind_rows(current_roster, new_employees) %>% arrange(name))
+
+        showNotification(
+          paste(nrow(new_employees), "new employee(s) added to roster."),
+          type = "message"
+        )
+      }
+    }
   })
 
   # Observer for the registration button
@@ -302,7 +376,7 @@ server <- function(input, output, session) {
     )
 
     # Add to the roster
-    employee_roster(bind_rows(current_roster, new_employee))
+    employee_roster(bind_rows(current_roster, new_employee) %>% arrange(name))
 
     # Provide feedback and clear inputs
     output$registration_status <- renderText({
@@ -317,6 +391,88 @@ server <- function(input, output, session) {
       selected = character(0)
     )
     updateCheckboxGroupInput(session, "new_schedule", selected = character(0))
+  })
+
+  # Observer for the delete button
+  observeEvent(input$delete_employee, {
+    selected_row <- input$rosterTable_rows_selected
+    req(selected_row) # Ensure a row is selected
+
+    current_roster <- employee_roster()
+    employee_to_remove <- current_roster$name[selected_row]
+
+    # Filter out the selected employee
+    updated_roster <- current_roster %>%
+      filter(name != employee_to_remove)
+
+    employee_roster(updated_roster)
+
+    showNotification(
+      paste("Employee '", employee_to_remove, "' has been deleted."),
+      type = "warning"
+    )
+  })
+
+  # --- New Feature: Employee Editing ---
+
+  # Observer to show the edit modal when the "Edit Selected" button is clicked
+  observeEvent(input$edit_employee_modal_btn, {
+    selected_row_index <- input$rosterTable_rows_selected
+    req(selected_row_index) # Require a row to be selected
+
+    roster <- employee_roster()
+    selected_employee <- roster[selected_row_index, ]
+
+    # Convert comma-separated strings to vectors for checkboxGroupInput
+    current_availability <- str_split(selected_employee$availability_days, ", ")[[1]]
+    current_schedule <- str_split(selected_employee$preferred_schedule, ", ")[[1]]
+
+    showModal(modalDialog(
+      title = "Edit Employee Information",
+      textInput("edit_name", "Full Name:", value = selected_employee$name),
+      textInput("edit_city", "Home City:", value = selected_employee$home_city),
+      checkboxGroupInput(
+        "edit_availability",
+        "Availability (Days of Week):",
+        choices = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"),
+        selected = current_availability,
+        inline = TRUE
+      ),
+      checkboxGroupInput(
+        "edit_schedule",
+        "Preferred Schedule Block:",
+        choices = c("AM", "MID", "PM"),
+        selected = current_schedule,
+        inline = TRUE
+      ),
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("save_changes_btn", "Save Changes", class = "btn-primary")
+      )
+    ))
+  })
+
+  # Observer to save the edited employee data
+  observeEvent(input$save_changes_btn, {
+    selected_row_index <- req(input$rosterTable_rows_selected)
+
+    current_roster <- employee_roster()
+    original_name <- current_roster$name[selected_row_index]
+
+    # Update the roster data frame
+    updated_roster <- current_roster
+    updated_roster[selected_row_index, "name"] <- trimws(input$edit_name)
+    updated_roster[selected_row_index, "home_city"] <- trimws(input$edit_city)
+    updated_roster[selected_row_index, "availability_days"] <- paste(input$edit_availability, collapse = ", ")
+    updated_roster[selected_row_index, "preferred_schedule"] <- paste(input$edit_schedule, collapse = ", ")
+
+    employee_roster(updated_roster %>% arrange(name))
+
+    removeModal()
+    showNotification(
+      paste("Employee '", original_name, "' has been updated."),
+      type = "warning"
+    )
   })
 
   # Handler for downloading sample data
@@ -343,6 +499,7 @@ server <- function(input, output, session) {
     DT::datatable(
       employee_roster(),
       options = list(pageLength = 10, scrollX = TRUE),
+      selection = 'single', # Allow single row selection
       rownames = FALSE,
       caption = htmltools::tags$caption(
         style = 'caption-side: top; text-align: left;',
