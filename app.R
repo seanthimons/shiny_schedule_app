@@ -61,8 +61,8 @@ ui <- fluidPage(
         id = "main_tabs",
         tabPanel(
           "Schedule Summary",
-          # Output: Data table
-          DT::dataTableOutput("summaryTable")
+          # *** MODIFIED: Use a dynamic UI output for the summary tables ***
+          uiOutput("summaryTablesUI")
         ),
         tabPanel(
           "Employee Registration",
@@ -103,7 +103,6 @@ ui <- fluidPage(
           hr(),
           DT::dataTableOutput("rosterTable")
         ),
-        # *** NEW FEATURE: SCHEDULE GENERATOR TAB ***
         tabPanel(
           "Schedule Generator",
           h4("Weekly Schedule Generation"),
@@ -122,7 +121,6 @@ ui <- fluidPage(
             ),
             column(
               3,
-              # This button is dynamically enabled/disabled
               downloadButton("downloadSchedule", "Export Schedule as CSV")
             )
           ),
@@ -138,7 +136,6 @@ ui <- fluidPage(
 server <- function(input, output, session) {
   # --- Existing Logic for Data Summary ---
 
-  # Reactive expression to read and validate the uploaded file
   raw_data <- reactive({
     req(input$file1)
     inFile <- input$file1
@@ -183,42 +180,108 @@ server <- function(input, output, session) {
     dateRangeInput("dateRange", "Filter by Date Range:", start = min_date, end = max_date, min = min_date, max = max_date)
   })
 
-  summary_data <- reactive({
+  # --- MODIFIED: Logic for Dynamic Summary Tables ---
+
+  # Reactive expression that filters data by date ONLY. City filtering is handled later.
+  filtered_data_by_date <- reactive({
     df <- raw_data()
-    req(df, input$cityFilter, input$dateRange)
-    filtered_df <- df %>%
-      filter(
-        (input$cityFilter == "All Cities" | home_city == input$cityFilter),
-        (date >= input$dateRange[1] & date <= input$dateRange[2])
-      )
-    if (nrow(filtered_df) == 0) {
+    req(df, input$dateRange)
+    df %>%
+      filter(date >= input$dateRange[1] & date <= input$dateRange[2])
+  })
+
+  # Helper function to create a summary table from a dataframe
+  create_summary_table <- function(data_subset, show_totals) {
+    if (nrow(data_subset) == 0) {
       return(tibble())
     }
-    summary_df <- filtered_df %>%
+    summary <- data_subset %>%
       count(date, schedule_block, name = "count") %>%
       tidyr::complete(date, schedule_block, fill = list(count = 0)) %>%
       pivot_wider(names_from = schedule_block, values_from = count, values_fill = 0) %>%
       arrange(date)
-    if (isTRUE(input$showTotals) && nrow(summary_df) > 0) {
-      summary_df <- summary_df %>%
+
+    if (isTRUE(show_totals) && nrow(summary) > 0) {
+      summary <- summary %>%
         adorn_totals(where = c("row", "col"), name = "Total")
     }
-    summary_df
+    summary
+  }
+
+  # Dynamically render the UI for the summary tables
+  output$summaryTablesUI <- renderUI({
+    # Require inputs to be available
+    req(filtered_data_by_date(), input$cityFilter)
+
+    if (input$cityFilter != "All Cities") {
+      # If a single city is selected, show one table
+      DT::dataTableOutput("singleCityTable")
+    } else {
+      # If "All Cities" is selected, create a UI for each city
+      city_list <- sort(unique(filtered_data_by_date()$home_city))
+      
+      # Use tagList to group multiple UI elements
+      tagList(lapply(city_list, function(city) {
+        # Sanitize city name for use in output ID
+        output_id <- paste0("city_table_", make.names(city))
+        list(
+          h4(paste("Summary for", city)),
+          DT::dataTableOutput(output_id),
+          hr()
+        )
+      }))
+    }
   })
 
-  output$summaryTable <- DT::renderDataTable({
-    req(summary_data())
-    caption_text <- if (is.null(input$cityFilter) || input$cityFilter == "All Cities") {
-      "Summary for all cities."
+  # Observer to populate the dynamically created tables with data
+  observe({
+    # Require the same inputs as the UI rendering part
+    data_for_tables <- filtered_data_by_date()
+    req(data_for_tables, input$cityFilter)
+
+    if (input$cityFilter != "All Cities") {
+      # Logic for rendering the single table
+      data_subset <- data_for_tables %>%
+        filter(home_city == input$cityFilter)
+      
+      summary_df <- create_summary_table(data_subset, input$showTotals)
+
+      output$singleCityTable <- DT::renderDataTable({
+        DT::datatable(
+          summary_df,
+          options = list(pageLength = 10, scrollX = TRUE),
+          rownames = FALSE,
+          caption = htmltools::tags$caption(
+            style = 'caption-side: top; text-align: left;',
+            'Daily Schedule Summary: ', htmltools::em(paste("Summary for", input$cityFilter))
+          )
+        )
+      })
     } else {
-      paste("Summary for", input$cityFilter)
+      # Logic for rendering multiple tables
+      city_list <- sort(unique(data_for_tables$home_city))
+      
+      lapply(city_list, function(city) {
+        # Use local() to ensure the correct value of 'city' is used in the render expression
+        local({
+          my_city <- city
+          output_id <- paste0("city_table_", make.names(my_city))
+          
+          data_subset <- data_for_tables %>%
+            filter(home_city == my_city)
+          
+          summary_df <- create_summary_table(data_subset, input$showTotals)
+
+          output[[output_id]] <- DT::renderDataTable({
+            DT::datatable(
+              summary_df,
+              options = list(pageLength = 10, scrollX = TRUE),
+              rownames = FALSE # Caption is provided by the h4 tag in the UI
+            )
+          })
+        })
+      })
     }
-    DT::datatable(
-      summary_data(),
-      options = list(pageLength = 10, scrollX = TRUE),
-      rownames = FALSE,
-      caption = htmltools::tags$caption(style = 'caption-side: top; text-align: left;', 'Daily Schedule Summary: ', htmltools::em(caption_text))
-    )
   })
 
   # --- Existing Logic for Employee Roster Management ---
@@ -346,87 +409,56 @@ server <- function(input, output, session) {
     )
   })
 
-  # --- *** SERVER LOGIC FOR SCHEDULE GENERATOR (UPDATED) *** ---
+  # --- SERVER LOGIC FOR SCHEDULE GENERATOR ---
 
-  # Reactive value to store the generated schedule data frame
   schedule_data <- reactiveVal(NULL)
 
-  # Observer for the "Generate New Schedule" button
   observeEvent(input$generate_schedule, {
     roster <- employee_roster()
     req(input$schedule_start_date, nrow(roster) > 0)
-
-    # Define the 7-day date range
     dates <- seq(input$schedule_start_date, by = "day", length.out = 7)
     date_colnames <- format(dates, "%a %Y-%m-%d")
-
-    # *** MODIFIED: Create an empty schedule tibble including home_city from the roster ***
     schedule <- roster %>%
       select(name, home_city) %>%
       arrange(name)
     schedule[, date_colnames] <- ""
-
-    # Generate shifts for each day
     for (i in seq_along(date_colnames)) {
-      shifts_needed <- c(
-        rep("AM", as.integer(input$shifts_am)),
-        rep("MID", as.integer(input$shifts_mid)),
-        rep("PM", as.integer(input$shifts_pm))
-      )
+      shifts_needed <- c(rep("AM", as.integer(input$shifts_am)), rep("MID", as.integer(input$shifts_mid)), rep("PM", as.integer(input$shifts_pm)))
       num_to_assign <- min(length(shifts_needed), nrow(roster))
       if (num_to_assign <= 0) next
       assigned_employees <- sample(roster$name, size = num_to_assign, replace = FALSE)
-      # *** MODIFIED: Use the correct column index (i + 2) since home_city is the 2nd column ***
       schedule[match(assigned_employees, schedule$name), i + 2] <- shifts_needed[1:num_to_assign]
     }
-
     schedule_data(schedule)
     showNotification("New schedule has been generated.", type = "message")
   })
 
-  # Reactive expression that calculates shift counts and prepares data for DT
   display_schedule <- reactive({
     req(schedule_data())
     df <- schedule_data()
-    
-    # *** MODIFIED: Calculate worked shifts, excluding name and home_city columns from the count ***
     shift_counts <- df %>%
       select(-name, -home_city) %>%
       rowwise() %>%
       mutate(`Shifts Worked` = sum(c_across() %in% c("AM", "MID", "PM"))) %>%
       pull(`Shifts Worked`)
-    
     df$`Shifts Worked` <- shift_counts
     df
   })
 
-  # Render the editable schedule table
   output$scheduleTable <- DT::renderDataTable({
     req(display_schedule())
     df <- display_schedule()
-    
-    # *** MODIFIED: Define non-editable columns: name (0), home_city (1), and Shifts Worked (last) ***
     non_editable_cols <- c(0, 1, ncol(df) - 1)
-
-    DT::datatable(
-      df,
-      editable = list(target = 'cell', disable = list(columns = non_editable_cols)),
-      options = list(pageLength = 25, scrollX = TRUE),
-      rownames = FALSE,
-      caption = "Weekly Schedule - Click a cell to edit (e.g., add 'PTO')."
-    )
+    DT::datatable(df, editable = list(target = 'cell', disable = list(columns = non_editable_cols)), options = list(pageLength = 25, scrollX = TRUE), rownames = FALSE, caption = "Weekly Schedule - Click a cell to edit (e.g., add 'PTO').")
   })
 
-  # Observer to handle cell edits from the user
   observeEvent(input$scheduleTable_cell_edit, {
     info <- input$scheduleTable_cell_edit
     current_data <- schedule_data()
-    # The `info$col` is 1-based and correctly maps to the column in schedule_data()
     current_data[info$row, info$col] <- info$value
     schedule_data(current_data)
   })
 
-  # Handler for downloading the generated schedule
   output$downloadSchedule <- downloadHandler(
     filename = function() {
       req(input$schedule_start_date)
@@ -434,26 +466,15 @@ server <- function(input, output, session) {
       end_date <- start_date + 6
       paste0("Schedule_", format(start_date, "%Y-%m-%d"), "_to_", format(end_date, "%Y-%m-%d"), ".csv")
     },
-    # *** MODIFIED: Reformat data to be compatible with the Schedule Summary tab ***
     content = function(file) {
       req(display_schedule())
-      
-      # Transform the wide schedule data into the long format required for summary
       long_schedule <- display_schedule() %>%
-        select(-`Shifts Worked`) %>% # Remove the summary count column
-        pivot_longer(
-          cols = -c(name, home_city),
-          names_to = "date_raw",
-          values_to = "schedule_block"
-        ) %>%
-        # Only keep rows that have an actual shift assignment
+        select(-`Shifts Worked`) %>%
+        pivot_longer(cols = -c(name, home_city), names_to = "date_raw", values_to = "schedule_block") %>%
         filter(schedule_block %in% c("AM", "MID", "PM")) %>%
-        # Extract the proper date from the column header (e.g., "Mon 2023-12-04")
         mutate(date = as_date(str_extract(date_raw, "\\d{4}-\\d{2}-\\d{2}"))) %>%
-        # Select and reorder columns to match the required input format
         select(date, name, home_city, schedule_block) %>%
         arrange(date, name)
-
       write_csv(long_schedule, file)
     }
   )
