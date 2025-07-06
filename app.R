@@ -61,8 +61,8 @@ ui <- fluidPage(
         id = "main_tabs",
         tabPanel(
           "Schedule Summary",
-          # *** MODIFIED: Use a dynamic UI output for the summary tables ***
-          uiOutput("summaryTablesUI")
+          # *** MODIFIED: Reverted to a single dataTableOutput for simplicity ***
+          DT::dataTableOutput("summaryTable")
         ),
         tabPanel(
           "Employee Registration",
@@ -180,108 +180,62 @@ server <- function(input, output, session) {
     dateRangeInput("dateRange", "Filter by Date Range:", start = min_date, end = max_date, min = min_date, max = max_date)
   })
 
-  # --- MODIFIED: Logic for Dynamic Summary Tables ---
-
-  # Reactive expression that filters data by date ONLY. City filtering is handled later.
-  filtered_data_by_date <- reactive({
+  # --- MODIFIED: Consolidated summary logic into a single reactive expression ---
+  summary_data <- reactive({
     df <- raw_data()
-    req(df, input$dateRange)
-    df %>%
+    req(df, input$cityFilter, input$dateRange)
+
+    filtered_df <- df %>%
       filter(date >= input$dateRange[1] & date <= input$dateRange[2])
-  })
 
-  # Helper function to create a summary table from a dataframe
-  create_summary_table <- function(data_subset, show_totals) {
-    if (nrow(data_subset) == 0) {
-      return(tibble())
+    if (input$cityFilter != "All Cities") {
+      # --- Logic for SINGLE CITY view ---
+      summary_df <- filtered_df %>%
+        filter(home_city == input$cityFilter) %>%
+        count(date, schedule_block) %>%
+        tidyr::complete(date, schedule_block, fill = list(n = 0)) %>%
+        pivot_wider(names_from = schedule_block, values_from = n, values_fill = 0)
+    } else {
+      # --- Logic for ALL CITIES view (pivoted wide by city-shift) ---
+      summary_df <- filtered_df %>%
+        count(date, home_city, schedule_block) %>%
+        # Arrange to ensure column order is consistent (e.g., CityA-AM, CityA-MID...)
+        arrange(home_city, schedule_block) %>%
+        # Unite city and shift to create new column names
+        unite(city_shift, home_city, schedule_block, sep = " - ") %>%
+        pivot_wider(names_from = city_shift, values_from = n, values_fill = 0)
     }
-    summary <- data_subset %>%
-      count(date, schedule_block, name = "count") %>%
-      tidyr::complete(date, schedule_block, fill = list(count = 0)) %>%
-      pivot_wider(names_from = schedule_block, values_from = count, values_fill = 0) %>%
-      arrange(date)
 
-    if (isTRUE(show_totals) && nrow(summary) > 0) {
-      summary <- summary %>%
+    # Ensure final table is sorted by date
+    summary_df <- summary_df %>% arrange(date)
+
+    # Conditionally add totals if the checkbox is ticked and data exists
+    if (isTRUE(input$showTotals) && nrow(summary_df) > 0) {
+      summary_df <- summary_df %>%
         adorn_totals(where = c("row", "col"), name = "Total")
     }
-    summary
-  }
-
-  # Dynamically render the UI for the summary tables
-  output$summaryTablesUI <- renderUI({
-    # Require inputs to be available
-    req(filtered_data_by_date(), input$cityFilter)
-
-    if (input$cityFilter != "All Cities") {
-      # If a single city is selected, show one table
-      DT::dataTableOutput("singleCityTable")
-    } else {
-      # If "All Cities" is selected, create a UI for each city
-      city_list <- sort(unique(filtered_data_by_date()$home_city))
-      
-      # Use tagList to group multiple UI elements
-      tagList(lapply(city_list, function(city) {
-        # Sanitize city name for use in output ID
-        output_id <- paste0("city_table_", make.names(city))
-        list(
-          h4(paste("Summary for", city)),
-          DT::dataTableOutput(output_id),
-          hr()
-        )
-      }))
-    }
+    summary_df
   })
 
-  # Observer to populate the dynamically created tables with data
-  observe({
-    # Require the same inputs as the UI rendering part
-    data_for_tables <- filtered_data_by_date()
-    req(data_for_tables, input$cityFilter)
-
-    if (input$cityFilter != "All Cities") {
-      # Logic for rendering the single table
-      data_subset <- data_for_tables %>%
-        filter(home_city == input$cityFilter)
-      
-      summary_df <- create_summary_table(data_subset, input$showTotals)
-
-      output$singleCityTable <- DT::renderDataTable({
-        DT::datatable(
-          summary_df,
-          options = list(pageLength = 10, scrollX = TRUE),
-          rownames = FALSE,
-          caption = htmltools::tags$caption(
-            style = 'caption-side: top; text-align: left;',
-            'Daily Schedule Summary: ', htmltools::em(paste("Summary for", input$cityFilter))
-          )
-        )
-      })
+  # Render the single summary table
+  output$summaryTable <- DT::renderDataTable({
+    req(summary_data())
+    
+    caption_text <- if (is.null(input$cityFilter) || input$cityFilter == "All Cities") {
+      "Summary for all cities."
     } else {
-      # Logic for rendering multiple tables
-      city_list <- sort(unique(data_for_tables$home_city))
-      
-      lapply(city_list, function(city) {
-        # Use local() to ensure the correct value of 'city' is used in the render expression
-        local({
-          my_city <- city
-          output_id <- paste0("city_table_", make.names(my_city))
-          
-          data_subset <- data_for_tables %>%
-            filter(home_city == my_city)
-          
-          summary_df <- create_summary_table(data_subset, input$showTotals)
-
-          output[[output_id]] <- DT::renderDataTable({
-            DT::datatable(
-              summary_df,
-              options = list(pageLength = 10, scrollX = TRUE),
-              rownames = FALSE # Caption is provided by the h4 tag in the UI
-            )
-          })
-        })
-      })
+      paste("Summary for", input$cityFilter)
     }
+    
+    DT::datatable(
+      summary_data(),
+      options = list(pageLength = 10, scrollX = TRUE),
+      rownames = FALSE,
+      caption = htmltools::tags$caption(
+        style = 'caption-side: top; text-align: left;',
+        'Daily Schedule Summary: ', htmltools::em(caption_text)
+      )
+    )
   })
 
   # --- Existing Logic for Employee Roster Management ---

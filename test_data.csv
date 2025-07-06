@@ -1,0 +1,20 @@
+date,name,home_city,schedule_block
+2023-11-01,Charlie Brown,Tokyo,AM
+2023-11-01,Grace Lee,London,AM
+2023-11-01,Alice Johnson,New York,MID
+2023-11-02,Diana Prince,Paris,MID
+2023-11-02,Alice Johnson,New York,AM
+2023-11-02,Eve Adams,Sydney,PM
+2023-11-03,Charlie Brown,Tokyo,AM
+2023-11-03,Alice Johnson,New York,AM
+2023-11-04,Bob Williams,London,PM
+2023-11-04,Eve Adams,Sydney,AM
+2023-11-05,Bob Williams,London,PM
+2023-11-06,Alice Johnson,New York,MID
+2023-11-06,Grace Lee,London,AM
+2023-11-06,Frank Miller,New York,AM
+2023-11-07,Diana Prince,Paris,PM
+2023-11-07,Grace Lee,London,MID
+2023-11-08,Charlie Brown,Tokyo,AM
+2023-11-08,Alice Johnson,New York,AM
+2023-11-08,Eve Adams,Sydney,MID
