@@ -4,12 +4,14 @@
 # It also includes employee roster management and a weekly schedule generator.
 
 # 1. Load necessary libraries
+{
 library(shiny)
 library(tidyverse)
 library(readxl)
 library(DT)
 library(janitor)
 library(lubridate)
+}
 
 # 2. Define the UI
 ui <- fluidPage(
