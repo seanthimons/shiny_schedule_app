@@ -6,7 +6,10 @@
 # 1. Load necessary libraries
 {
 library(shiny)
-library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(magrittr)
+library(readr)
 library(readxl)
 library(DT)
 library(janitor)
